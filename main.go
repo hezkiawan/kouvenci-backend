@@ -91,7 +91,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	result, err := client.Models.GenerateContent(
 		ctx,
-		"gemini-2.0-flash",
+		"gemma-3-27b-it",
 		genai.Text(chatReq.Message),
 		nil,
 	)
