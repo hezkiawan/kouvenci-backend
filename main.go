@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"github.com/rs/cors"
+	"google.golang.org/genai"
 )
 
 // ==========================================
-// Structs for Vault & Gemini
+// Structs for Vault Response
 // ==========================================
-
-// VaultResponse represents the nested JSON structure returned by HashiCorp Vault (KV v2)
 type VaultResponse struct {
 	Data struct {
 		Data map[string]string `json:"data"`
@@ -28,32 +27,8 @@ type ChatRequest struct {
 	Message string `json:"message"`
 }
 
-// GeminiRequest represents the payload we send to Google's API
-type GeminiRequest struct {
-	Contents []Content `json:"contents"`
-}
-
-type Content struct {
-	Parts []Part `json:"parts"`
-}
-
-type Part struct {
-	Text string `json:"text"`
-}
-
-// GeminiResponse represents the JSON we get back from Google
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
-
-// Global variable to hold the secret (fetched at runtime)
-var googleAPIKey string
+// Global variable for the GenAI Client
+var client *genai.Client
 
 // ==========================================
 // 1. Zero-Trust Security: Fetch Secret at Runtime
@@ -62,8 +37,7 @@ func getSecretFromVault() (string, error) {
 	// DYNAMIC URL: Check if K8s provided a specific Vault Address
 	vaultAddr := os.Getenv("VAULT_ADDR")
 	if vaultAddr == "" {
-		// Default to localhost for local testing outside Docker
-		vaultAddr = "http://127.0.0.1:8200"
+		vaultAddr = "http://127.0.0.1:8200" // Default for local testing
 	}
 
 	// Construct the full URL
@@ -75,12 +49,11 @@ func getSecretFromVault() (string, error) {
 		return "", err
 	}
 
-	// In a real prod env, this token is injected via the orchestrator (like Kubernetes Service Account)
-	// For this simulation, we use the root token.
+	// In production, use K8s Service Account Token. Here we use root.
 	req.Header.Set("X-Vault-Token", "root")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -104,7 +77,7 @@ func getSecretFromVault() (string, error) {
 }
 
 // ==========================================
-// 2. Chat Handler
+// 2. Chat Handler (Updated to use SDK)
 // ==========================================
 func chatHandler(w http.ResponseWriter, r *http.Request) {
 	var chatReq ChatRequest
@@ -113,37 +86,28 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Construct the payload for Gemini
-	geminiPayload := GeminiRequest{
-		Contents: []Content{
-			{Parts: []Part{{Text: chatReq.Message}}},
-		},
-	}
-	jsonData, _ := json.Marshal(geminiPayload)
+	// Use the SDK to generate content
+	// We use "gemini-1.5-flash" (Stable model)
+	ctx := context.Background()
+	result, err := client.Models.GenerateContent(
+		ctx,
+		"gemini-1.5-flash",
+		genai.Text(chatReq.Message),
+		nil,
+	)
 
-	// Send to Google
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + googleAPIKey
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Printf("Error calling Gemini: %v", err)
-		http.Error(w, "Failed to call Gemini API", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Parse Google's response
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		log.Printf("Error parsing Gemini response: %v", err)
-		http.Error(w, "Failed to parse Gemini response", http.StatusInternalServerError)
+		// Log the ACTUAL error from Google
+		log.Printf("❌ Google API Error: %v", err)
+		http.Error(w, "AI Service Error", http.StatusInternalServerError)
 		return
 	}
 
-	// Extract the text safely
-	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
-		aiText := geminiResp.Candidates[0].Content.Parts[0].Text
+	// The SDK handles parsing the response safely
+	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
+		// Extract text from the new SDK structure
+		aiText := fmt.Sprintf("%v", result.Candidates[0].Content.Parts[0].Text)
 
-		// Return JSON to frontend
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"response": aiText})
 	} else {
@@ -161,17 +125,26 @@ func main() {
 	log.Println("📡 Contacting HashiCorp Vault...")
 	secret, err := getSecretFromVault()
 	if err != nil {
-		// FAIL FAST: If we can't get the secret, we refuse to start.
-		log.Fatalf("❌ CRITICAL SECURITY ERROR: Could not fetch API Key from Vault: %v", err)
+		log.Fatalf("❌ CRITICAL SECURITY ERROR: Could not fetch API Key: %v", err)
 	}
-	googleAPIKey = secret
-	log.Println("✅ Identity Confirmed. API Key loaded into memory.")
+	log.Println("✅ Identity Confirmed. API Key loaded.")
 
-	// Step 2: Setup Router & CORS
+	// Step 2: Initialize Google SDK
+	ctx := context.Background()
+	var errClient error
+
+	// FIX: Removed the "Backend" field. Just passing the APIKey is enough.
+	client, errClient = genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey: secret,
+	})
+	if errClient != nil {
+		log.Fatalf("❌ Failed to initialize Google SDK: %v", errClient)
+	}
+
+	// Step 3: Setup Router
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/chat", chatHandler)
 
-	// Allow All Origins for this demo (simplifies Ingress/CORS issues)
 	handler := cors.AllowAll().Handler(mux)
 
 	log.Println("🚀 Server listening on port 8080")
