@@ -27,41 +27,30 @@ jobs:
 
       - name: Build and Push Docker image
         run: |
-          # 1. Convert owner to lowercase (GHCR requirement)
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          
-          # 2. Define the full image path
           IMAGE_ID=ghcr.io/$OWNER/$IMAGE_NAME
 
-          # 3. Build the image with two tags: Commit SHA and Latest
+          # FIX: Added "sha-" prefix here to match the NEW_TAG variable below
           docker build . --file Dockerfile \
-            --tag $IMAGE_ID:${{ github.sha }} \
+            --tag $IMAGE_ID:sha-${{ github.sha }} \
             --tag $IMAGE_ID:latest
 
-          # 4. Push both tags to GitHub Container Registry
-          docker push $IMAGE_ID:${{ github.sha }}
+          docker push $IMAGE_ID:sha-${{ github.sha }}
           docker push $IMAGE_ID:latest
           
       - name: Update Kubernetes Manifest
         env:
-            # This is the token you just created
             PERSONAL_ACCESS_TOKEN: ${{ secrets.INFRA_REPO_PAT }}
-            # The new tag we just built
             NEW_TAG: sha-${{ github.sha }}
         run: |
-            # 1. Configure Git
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
             git config --global user.name "GitHub Actions"
 
-            # 2. Clone the INFRA repo (using the PAT)
             git clone https://x-access-token:${PERSONAL_ACCESS_TOKEN}@github.com/hezkiawan/kouvenci-infra.git
             cd kouvenci-infra
 
-            # 3. Update the YAML file using sed (Stream Editor)
-            # It looks for "kouvenci-backend:..." and replaces it with the new tag
             sed -i "s|image: ghcr.io/hezkiawan/kouvenci-backend:.*|image: ghcr.io/hezkiawan/kouvenci-backend:$NEW_TAG|g" k8s-manifests.yaml
 
-            # 4. Commit and Push the change
             git add k8s-manifests.yaml
             git commit -m "ci: update backend image to $NEW_TAG"
             git push
