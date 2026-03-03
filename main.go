@@ -115,6 +115,14 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// 4. Health Check Handler (Simple & Testable)
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	// Return a simple JSON saying "I'm alive"
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"alive"}`))
+}
+
 // ==========================================
 // 3. Main Entrypoint
 // ==========================================
@@ -144,6 +152,8 @@ func main() {
 	// Step 3: Setup Router
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/chat", chatHandler)
+
+	mux.HandleFunc("/healthz", healthHandler)
 
 	handler := cors.AllowAll().Handler(mux)
 
