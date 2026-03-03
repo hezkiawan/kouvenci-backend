@@ -1,0 +1,43 @@
+name: Backend CI/CD Pipeline
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  IMAGE_NAME: kouvenci-backend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker image
+        run: |
+          # 1. Convert owner to lowercase (GHCR requirement)
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          
+          # 2. Define the full image path
+          IMAGE_ID=ghcr.io/$OWNER/$IMAGE_NAME
+
+          # 3. Build the image with two tags: Commit SHA and Latest
+          docker build . --file Dockerfile \
+            --tag $IMAGE_ID:${{ github.sha }} \
+            --tag $IMAGE_ID:latest
+
+          # 4. Push both tags to GitHub Container Registry
+          docker push $IMAGE_ID:${{ github.sha }}
+          docker push $IMAGE_ID:latest
