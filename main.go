@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/rs/cors"
@@ -58,8 +59,16 @@ var googleAPIKey string
 // 1. Zero-Trust Security: Fetch Secret at Runtime
 // ==========================================
 func getSecretFromVault() (string, error) {
-	// Vault address (usually http://127.0.0.1:8200 locally)
-	vaultURL := "http://127.0.0.1:8200/v1/secret/data/kouventa"
+	// DYNAMIC URL: Check if K8s provided a specific Vault Address
+	vaultAddr := os.Getenv("VAULT_ADDR")
+	if vaultAddr == "" {
+		// Default to localhost for local testing outside Docker
+		vaultAddr = "http://127.0.0.1:8200"
+	}
+
+	// Construct the full URL
+	vaultURL := fmt.Sprintf("%s/v1/secret/data/kouventa", vaultAddr)
+	log.Printf("📡 Connecting to Vault at: %s", vaultURL)
 
 	req, err := http.NewRequest("GET", vaultURL, nil)
 	if err != nil {
@@ -116,6 +125,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + googleAPIKey
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
+		log.Printf("Error calling Gemini: %v", err)
 		http.Error(w, "Failed to call Gemini API", http.StatusInternalServerError)
 		return
 	}
@@ -124,6 +134,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse Google's response
 	var geminiResp GeminiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+		log.Printf("Error parsing Gemini response: %v", err)
 		http.Error(w, "Failed to parse Gemini response", http.StatusInternalServerError)
 		return
 	}
@@ -144,7 +155,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 // 3. Main Entrypoint
 // ==========================================
 func main() {
-	log.Println("🔐 Kouventi Backend Starting...")
+	log.Println("🔐 KouvenCI Backend Starting...")
 
 	// Step 1: Securely fetch credentials
 	log.Println("📡 Contacting HashiCorp Vault...")
@@ -160,12 +171,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/chat", chatHandler)
 
-	// Allow Next.js (port 3000) to talk to Go (port 8080)
-	handler := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:3000"},
-		AllowedMethods: []string{"POST", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type"},
-	}).Handler(mux)
+	// Allow All Origins for this demo (simplifies Ingress/CORS issues)
+	handler := cors.AllowAll().Handler(mux)
 
 	log.Println("🚀 Server listening on port 8080")
 	if err := http.ListenAndServe(":8080", handler); err != nil {
